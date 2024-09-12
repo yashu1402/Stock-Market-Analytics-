@@ -38,6 +38,10 @@ tables = pd.read_html(url)
 sp500_table = tables[0]
 ticker_list = sp500_table['Symbol'].tolist()
 ticker = st.sidebar.selectbox('Select the company',ticker_list)
+sector = sp500_table[sp500_table['Symbol'] == ticker]['GICS Sector'].values[0]
+industry = sp500_table[sp500_table['Symbol'] == ticker]['GICS Sub-Industry'].values[0]
+st.write("<p style='color:red; font-size: 20px; font-weight:bold'>Entered Stock Sector :- <span style='color:green'>{}</span></p>".format(sector), unsafe_allow_html=True)
+st.write("<p style='color:red; font-size: 20px; font-weight:bold'>Entered Stock Sub-Industry :- <span style='color:green'>{}</span></p>".format(industry), unsafe_allow_html=True)
  
  
 #fetching data from user inputs using yfinanace library
@@ -114,6 +118,7 @@ st.header('Top 5 Similar Stocks')
 # Fetch sector information of the selected ticker
 sector = sp500_table[sp500_table['Symbol'] == ticker]['GICS Sector'].values[0]
 industry = sp500_table[sp500_table['Symbol'] == ticker]['GICS Sub-Industry'].values[0]
+
 
 # Filter stocks with the same sector and industry
 similar_stocks = sp500_table[(sp500_table['GICS Sector'] == sector) & (sp500_table['Symbol'] != ticker)].head(5)
