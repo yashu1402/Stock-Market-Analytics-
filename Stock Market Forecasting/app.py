@@ -22,14 +22,13 @@ st.subheader('This application is created to predict the stock market orice of t
 
 st.image("https://akm-img-a-in.tosshub.com/indiatoday/images/story/202401/top-stock-picks-for-today-the-market-veteran-also-liked-bharat-dynamics-ltd-164112329-16x9.jpg?VersionId=Xx6nIyHvkXKxieGa_KqwFIv.GCZWvK_9&size=690:388")
 
-
 #sidebar
 st.sidebar.header("Select Input Parameters Below")
 
 
 #Taking start date and end date as input from user of this application
-start_date = st.sidebar.date_input('Start Date', date(2023,11,19))
-end_date = st.sidebar.date_input('End Date', date(2024,6,29))
+start_date = st.sidebar.date_input('Start Date', date.today() - timedelta(days=365))
+end_date = st.sidebar.date_input('End Date', date.today())
 
 
 #add ticker symbols list
@@ -69,10 +68,27 @@ st.write(data)
 
 # ADf test check for stationarity
 st.header('Is data stationary')
-st.write(adfuller(data[column])[1] < 0.05)
+if not data[column].empty:
+    st.write(adfuller(data[column])[1] < 0.05)
+else:
+    st.write("Data is empty")
 
-decomposition = seasonal_decompose(data[column],model='additive',period=12)
-st.plotly_chart(px.line(x=data["Date"], y=decomposition.trend,title='Trend',width=2500,height=500,labels={'x':'Date','y':'Price'}))
+# Convert data's index to datetime index with timezone
+data['Date'] = pd.to_datetime(data['Date'])
+data.set_index('Date', inplace=True)
+
+# Seasonal decomposition
+# Ensure at least two full cycles are present for seasonal decomposition
+#cycle_period = 12  # Assuming 12 for monthly data (or adjust based on data)
+#min_cycles_required = 2
+#min_observations_required = cycle_period * min_cycles_required
+
+#if len(data) >= min_observations_required:
+#    decomposition = seasonal_decompose(data[column], model='additive', period=cycle_period)
+#    st.plotly_chart(px.line(x=data.index, y=decomposition.trend, title='Trend', width=2500, height=500, labels={'x':'Date','y':'Price'}))
+#else:
+#    st.write(f"Not enough data for seasonal decomposition. At least {min_observations_required} observations are required, but only {len(data)} are available.")
+
 
 model= sm.tsa.statespace.SARIMAX(data[column],order=(2,1,2))
 model=model.fit()
@@ -91,14 +107,14 @@ st.write("## Actual Data", data)
 
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=data["Date"],y=data[column],mode='lines', name='Actual', line=dict(color='blue')))
+fig.add_trace(go.Scatter(x=data.index,y=data[column],mode='lines', name='Actual', line=dict(color='blue')))
 fig.add_trace(go.Scatter(x=predictions["Date"], y=predictions["predicted_mean"], mode='lines', name='Predicted', line=dict(color='red')))
 fig.update_layout(title='Actual vs Predicted', xaxis_title='Date', yaxis_title='Price', width=1000,height=400)
 st.plotly_chart(fig)
 
 # calculate the percentage of risk,profit,loss and also show them to user at the end
 actual_last_price = data[column].iloc[-1]
-predicted_last_price = predictions["predicted_mean"].iloc[-1]
+predicted_last_price = predictions["predicted_mean"].iloc [-1]
 
 if actual_last_price > predicted_last_price:
     risk = ((actual_last_price - predicted_last_price) / actual_last_price) * 100
