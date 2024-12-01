@@ -1,5 +1,10 @@
-import requests
-import streamlit as st 
+import streamlit as st
+import mysql.connector
+import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import requests 
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -7,377 +12,600 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.express as px
-import datetime
 from datetime import date, timedelta
 from statsmodels.tsa.seasonal import seasonal_decompose
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
+from cryptography.fernet import Fernet
 
+# Define a single static key for encryption/decryption (Store this securely in real-world applications)
+key = b'DPQ1H9pe1Xp0dqQg9xhB68Z1ubqOY0UKuueIEJaJMQ8='  # Example key, must be exactly 32 bytes base64 encoded
+cipher_suite = Fernet(key)
 
-# App name
-app_name = 'Stock Market Analytics'
-st.title(app_name)
-st.subheader('This application is created to predict the stock market price of the selected company.')
+# Database Configuration
+db_config = {
+    "host": "localhost",
+    "user": "root",
+    "password": "12345",
+    "database": "stock_app"  # Use the same database in both login and registration
+}
 
-# Display an image
-st.image("https://akm-img-a-in.tosshub.com/indiatoday/images/story/202401/top-stock-picks-for-today-the-market-veteran-also-liked-bharat-dynamics-ltd-164112329-16x9.jpg?VersionId=Xx6nIyHvkXKxieGa_KqwFIv.GCZWvK_9&size=690:388")
+# Email Configuration
+smtp_server = 'smtp.gmail.com'
+smtp_port = 587
+sender_email = 'kudiyayash31@gmail.com'
+sender_password = 'blxx sdpn ahwt mifa'
 
-# Function to fetch top gainers and losers with company name and sector
-def fetch_top_gainers_losers():
-    # Fetch S&P 500 company tickers
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    tables = pd.read_html(url)
-    sp500_table = tables[0]
-    
-    tickers = sp500_table['Symbol'].tolist()
-    sectors = sp500_table.set_index('Symbol')['GICS Sector'].to_dict()
-    company_names = sp500_table.set_index('Symbol')['Security'].to_dict()
-    
-    # Fetch current stock prices
-    data = yf.download(tickers, period='1d', group_by='ticker', auto_adjust=True)
-    
-    # Debug: Check if data is fetched
-    print(data.head())
+otp = None
 
-    # Calculate the percentage change
-    changes = {}
-    current_prices = {}
-    last_prices = {}
-    for ticker in tickers:
-        if ticker in data.columns:
-            if not data[ticker].empty and 'Close' in data[ticker] and 'Open' in data[ticker]:
-                try:
-                    change_percent = (data[ticker]['Close'][-1] - data[ticker]['Open'][-1]) / data[ticker]['Open'][-1] * 100
-                    changes[ticker] = change_percent
-                    current_prices[ticker] = data[ticker]['Close'][-1]
-                    last_prices[ticker] = data[ticker]['Open'][-1]
-                except IndexError:
-                    continue  # Skip if there's an IndexError
+def connect_to_db():
+    try:
+        conn = mysql.connector.connect(**db_config)
+        return conn
+    except mysql.connector.Error as err:
+        st.error(f"Database connection error: {err}")
+        return None
 
-    # Debug: Check changes dictionary
-    print("Changes Dictionary:", changes)
+def send_otp(username, email):
+    otp = random.randint(100000, 999999)
+    st.session_state.otp = otp  # Store OTP in session state to persist it
+    message = f"Your OTP for login is {otp}"
 
-    # Create DataFrame and filter valid changes
-    change_df = pd.DataFrame(list(changes.items()), columns=['Ticker', 'Change'])
-    change_df['Company'] = change_df['Ticker'].map(company_names)
-    change_df['Sector'] = change_df['Ticker'].map(sectors)
-    change_df['Current Price'] = change_df['Ticker'].map(current_prices)
-    change_df['Last Price'] = change_df['Ticker'].map(last_prices)
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = email
+    msg['Subject'] = 'OTP for Login'
+    msg.attach(MIMEText(message, 'plain'))
 
-    # Convert 'Change' to numeric
-    change_df['Change'] = pd.to_numeric(change_df['Change'], errors='coerce')
-    change_df.dropna(subset=['Change'], inplace=True)  # Drop rows where Change is NaN
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, email, msg.as_string())
+        server.quit()
+        st.success(f"OTP sent to {email}. Please check your inbox.")
+    except Exception as e:
+        st.error(f"Failed to send OTP: {e}")
 
-    # Debug: Check change_df before filtering
-    print("Change DataFrame before filtering:", change_df)
+def verify_otp(username, input_otp):
+    if 'otp' in st.session_state:
+        if str(st.session_state.otp) == str(input_otp):  # Compare as strings
+            # After OTP is verified, redirect the user to the dashboard
+            conn = connect_to_db()
+            if conn:
+                cursor = conn.cursor()
+                query = "SELECT * FROM INFO WHERE username = %s"
+                cursor.execute(query, (username,))
+                user = cursor.fetchone()
+                conn.close()
+                if user:
+                    st.session_state["user_logged_in"] = True
+                    st.success("OTP verified successfully! Redirecting to the dashboard...")
 
-    # Add percentage change column for display
-    change_df['Percent Change'] = change_df['Change'].apply(lambda x: f"{x:.2f}%")
-    
-    # Get top gainers and losers
-    if not change_df.empty:
-        top_gainers = change_df.nlargest(5, 'Change')
-        top_losers = change_df.nsmallest(5, 'Change')
+                    # Set logged_in session state
+                    st.session_state.logged_in = True
+                    st.rerun()  # This will trigger a page rerun and load the app page
+
+                else:
+                    st.error("User not found. Please register first.")
+            else:
+                st.error("Database connection error.")
+        else:
+            st.error("Invalid OTP. Please try again.")
     else:
-        top_gainers = pd.DataFrame(columns=['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price'])
-        top_losers = pd.DataFrame(columns=['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price'])
+        st.error("OTP not generated. Please request a new OTP.")
 
-    return top_gainers, top_losers
+def encrypt_password(password):
+    """Encrypt the password using Fernet."""
+    return cipher_suite.encrypt(password.encode())
 
-# Display live market top gainers and losers
-st.header('Live Market Top Gainers and Losers')
-gainers, losers = fetch_top_gainers_losers()
+def decrypt_password(encrypted_password):
+    """Decrypt the password using Fernet."""
+    return cipher_suite.decrypt(encrypted_password).decode()
 
-st.subheader('Top Gainers')
-gainers_display = gainers[['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price']]
-gainers_display.columns = ['Company', 'Ticker', 'Change', 'Sector', 'Percent Gain', 'Current Price', 'Last Price']
-st.write(gainers_display)
-
-st.subheader('Top Losers')
-losers_display = losers[['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price']]
-losers_display.columns = ['Company', 'Ticker', 'Change', 'Sector', 'Percent Loss', 'Current Price', 'Last Price']
-st.write(losers_display)
-
-# Function to fetch monthly performance of stocks
-#def fetch_monthly_performance():
-    # Fetching S&P 500 tickers
-    #url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    #tables = pd.read_html(url)
-    #sp500_table = tables[0]
+def login_user():
+    st.title("Login")
     
-    #tickers = sp500_table['Symbol'].tolist()
-    #sectors = sp500_table.set_index('Symbol')['GICS Sector'].to_dict()
-    #company_names = sp500_table.set_index('Symbol')['Security'].to_dict()
+    # Initialize session state variables if not already set
+    if 'otp_sent' not in st.session_state:
+        st.session_state.otp_sent = False
+    if 'otp_verified' not in st.session_state:
+        st.session_state.otp_verified = False
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+    
+    # Username input (always visible)
+    username = st.text_input("Username")
+    
+    # Password input (always visible)
+    password = st.text_input("Password", type="password")
+    
+    # Email input (always visible)
+    email = st.text_input("Email")
+    
+    # Send OTP button
+    if st.button("Send OTP") and not st.session_state.otp_sent:
+        if username and email:
+            # Send OTP
+            send_otp(username, email)
+            st.session_state.otp_sent = True
+        else:
+            st.error("Please enter both username and email.")
+    
+    # OTP input field (visible only after OTP is sent)
+    if st.session_state.otp_sent and not st.session_state.logged_in:
+        otp_input = st.text_input("Enter OTP")
+        
+        # Verify OTP button (visible only after OTP is sent)
+        if st.button("Verify OTP"):
+            if otp_input:
+                # Use the existing verify_otp function
+                verify_otp(username, otp_input)
+            else:
+                st.error("Please enter the OTP.")
+    
+    # If user is logged in through OTP verification, show success
+    if st.session_state.get("user_logged_in", False):
+        st.success("Login Successful!")
+        # After successful login, redirect to the dashboard
+        dasboard()
 
-    # Define the time period (last 30 days)
-    #end_date = date.today()
-    #start_date = end_date - timedelta(days=30)
+def register_user():
+    st.title("Register New User")
+    st.subheader("Create your account")
 
-    # Download stock data for the last month
-    #data = yf.download(tickers, start=start_date, end=end_date, group_by='ticker', auto_adjust=True)
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    email = st.text_input("Email")
 
-    # Calculate monthly percentage change
-    #monthly_changes = {}
-    #current_prices = {}
-    #last_month_prices = {}
+    if st.button("Register"):
+        if username and password and email:
+            conn = connect_to_db()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(""" 
+                    CREATE TABLE IF NOT EXISTS INFO (
+                        ID INT AUTO_INCREMENT PRIMARY KEY,
+                        Email VARCHAR(100) UNIQUE,
+                        Username VARCHAR(50),
+                        Password VARCHAR(100)
+                    )
+                """)
+                encrypted_password = encrypt_password(password)
+                try:
+                    cursor.execute("INSERT INTO INFO (Email, Username, Password) VALUES (%s, %s, %s)", 
+                                   (email, username, encrypted_password.decode()))
+                    conn.commit()
+                    st.success("User registered successfully!")
+                    login_user()
+                except mysql.connector.IntegrityError:
+                    st.error("Username or email already registered.")
+                conn.close()
+        else:
+            st.error("Please fill all fields.")
 
-     #for ticker in tickers:
-       # if ticker in data.columns and not data[ticker].empty and 'Close' in data[ticker]:
-          #  try:
-         #       change_percent = (data[ticker]['Close'][-1] - data[ticker]['Close'][0]) / data[ticker]['Close'][0] * 100
-        #        monthly_changes[ticker] = change_percent
-       #         current_prices[ticker] = data[ticker]['Close'][-1]
-      #          last_month_prices[ticker] = data[ticker]['Close'][0]
-     #       except IndexError:
-    #            continue  # Skip if there's an IndexError
+def dasboard():
+    # App name
+    app_name = 'Stock Market Analytics'
+    st.title(app_name)
+    st.subheader('This application is created to predict the stock market price of the selected company.')
 
-    # Create DataFrame for monthly performance
-   # monthly_df = pd.DataFrame(list(monthly_changes.items()), columns=['Ticker', 'Change'])
-   # monthly_df['Company'] = monthly_df['Ticker'].map(company_names)
-   # monthly_df['Sector'] = monthly_df['Ticker'].map(sectors)
-   # monthly_df['Current Price'] = monthly_df['Ticker'].map(current_prices)
-  #  monthly_df['Last Month Price'] = monthly_df['Ticker'].map(last_month_prices)
+    # Display an image
+    st.image("https://akm-img-a-in.tosshub.com/indiatoday/images/story/202401/top-stock-picks-for-today-the-market-veteran-also-liked-bharat-dynamics-ltd-164112329-16x9.jpg?VersionId=Xx6nIyHvkXKxieGa_KqwFIv.GCZWvK_9&size=690:388")
 
-    # Convert 'Change' to numeric and drop NaN values
- #   monthly_df['Change'] = pd.to_numeric(monthly_df['Change'], errors='coerce')
-#    monthly_df.dropna(subset=['Change'], inplace=True)
+    # Function to fetch top gainers and losers with company name and sector
+    def fetch_top_gainers_losers():
+        # Fetch S&P 500 company tickers
+        db_connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="12345",
+            database="stock_market"
+        )
 
-  # Add percentage change column
- #   monthly_df['Percent Change'] = monthly_df['Change'].apply(lambda x: f"{x:.2f}%")
+        query = "SELECT Symbol, GICS_Sector, Security FROM sp500_companies"
+        cursor = db_connection.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
 
-#    return monthly_df
+        tickers = [row[0] for row in results]
+        sectors = {row[0]: row[1] for row in results}
+        company_names = {row[0]: row[2] for row in results}
 
-# Display monthly performance
-#st.header('Monthly Performance of Stocks')
-#monthly_performance = fetch_monthly_performance()
+        cursor.close()
+        db_connection.close()
 
-# Display the top gainers and losers for the last month
-#st.subheader('Top 5 Monthly Gainers')
-#monthly_gainers = monthly_performance.nlargest(5, 'Change')
-#st.write(monthly_gainers[['Company', 'Ticker', 'Sector', 'Percent Change', 'Current Price', 'Last Month Price']])
+    
+        # Fetch current stock prices
+        data = yf.download(tickers, period='1d', group_by='ticker', auto_adjust=True)
+    
+        # Debug: Check if data is fetched
+        print(data.head())
 
-#st.subheader('Top 5 Monthly Losers')
-#monthly_losers = monthly_performance.nsmallest(5, 'Change')
-#st.write(monthly_losers[['Company', 'Ticker', 'Sector', 'Percent Change', 'Current Price', 'Last Month Price']]) 
+        # Calculate the percentage change
+        changes = {}
+        current_prices = {}
+        last_prices = {}
+        for ticker in tickers:
+            if ticker in data.columns:
+                if not data[ticker].empty and 'Close' in data[ticker] and 'Open' in data[ticker]:
+                    try:
+                        change_percent = (data[ticker]['Close'][-1] - data[ticker]['Open'][-1]) / data[ticker]['Open'][-1] * 100
+                        changes[ticker] = change_percent
+                        current_prices[ticker] = data[ticker]['Close'][-1]
+                        last_prices[ticker] = data[ticker]['Open'][-1]
+                    except IndexError:
+                        continue  # Skip if there's an IndexError
 
-# Sidebar header
-st.sidebar.header("Select Input Parameters Below")
+        # Debug: Check changes dictionary
+        print("Changes Dictionary:", changes)
 
-# Adding a button to refresh data
-refresh_button = st.sidebar.button("Refresh Data")
+        # Create DataFrame and filter valid changes
+        change_df = pd.DataFrame(list(changes.items()), columns=['Ticker', 'Change'])
+        change_df['Company'] = change_df['Ticker'].map(company_names)
+        change_df['Sector'] = change_df['Ticker'].map(sectors)
+        change_df['Current Price'] = change_df['Ticker'].map(current_prices)
+        change_df['Last Price'] = change_df['Ticker'].map(last_prices)
 
-# Taking start date and end date as input from user
-start_date = st.sidebar.date_input('Start Date', date.today() - timedelta(days=365))
-end_date = st.sidebar.date_input('End Date', date.today())
+        # Convert 'Change' to numeric
+        change_df['Change'] = pd.to_numeric(change_df['Change'], errors='coerce')
+        change_df.dropna(subset=['Change'], inplace=True)  # Drop rows where Change is NaN
 
-# Fetching S&P 500 company tickers
-url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-tables = pd.read_html(url)
-sp500_table = tables[0]
-ticker_list = sp500_table['Symbol'].tolist()
-ticker = st.sidebar.selectbox('Select the company', ticker_list)
+        # Debug: Check change_df before filtering
+        print("Change DataFrame before filtering:", change_df)
 
-# Add space or divider to visually separate the footer section
-st.sidebar.markdown("---")  # A horizontal line (divider)
+        # Add percentage change column for display
+        change_df['Percent Change'] = change_df['Change'].apply(lambda x: f"{x:.2f}%")
+    
+        # Get top gainers and losers
+        if not change_df.empty:
+            top_gainers = change_df.nlargest(5, 'Change')
+            top_losers = change_df.nsmallest(5, 'Change')
+        else:
+            top_gainers = pd.DataFrame(columns=['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price'])
+            top_losers = pd.DataFrame(columns=['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price'])
 
-# Collapsible "About Us" Section
-with st.sidebar.expander("About Us"):
-    st.write("""
-    Welcome to Stock Market Analytics, your one-stop platform for tracking and analyzing the stock market. 
-    Our mission is to provide users with a comprehensive and user-friendly interface to explore the world of finance.
-    Our team of experts is dedicated to delivering accurate and timely data, along with powerful analytics tools, to help you make informed investment decisions.
-    Whether you're a seasoned investor or just starting out, we're committed to helping you navigate the complex world of finance with ease.
-    """)
+        return top_gainers, top_losers
 
-# Collapsible "Contact Us" Section
-with st.sidebar.expander("Contact Us"):
-    st.write("""
-    Feel free to reach out to us for any inquiries or support:
-    - **Email**: support@stocktracker.com
-    - **Phone**: +1 234 567 890
-    """)
+    # Display live market top gainers and losers
+    st.header('Live Market Top Gainers and Losers')
+    gainers, losers = fetch_top_gainers_losers()
 
-# Fetch sector and industry for the selected stock
-sector = sp500_table[sp500_table['Symbol'] == ticker]['GICS Sector'].values[0]
-industry = sp500_table[sp500_table['Symbol'] == ticker]['GICS Sub-Industry'].values[0]
-st.write(f"<p style='color:red; font-size: 20px; font-weight:bold'>Entered Stock Sector :- <span style='color:green'>{sector}</span></p>", unsafe_allow_html=True)
-st.write(f"<p style='color:red; font-size: 20px; font-weight:bold'>Entered Stock Sub-Industry :- <span style='color:green'>{industry}</span></p>", unsafe_allow_html=True)
+    st.subheader('Top Gainers')
+    gainers_display = gainers[['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price']]
+    gainers_display.columns = ['Company', 'Ticker', 'Change', 'Sector', 'Percent Gain', 'Current Price', 'Last Price']
+    st.write(gainers_display)
 
-# Refresh data if refresh button is pressed
-if refresh_button:
-    data = yf.download(ticker, start=start_date, end=end_date)
-else:
-    data = yf.download(ticker, start=start_date, end=end_date)
+    st.subheader('Top Losers')
+    losers_display = losers[['Company', 'Ticker', 'Change', 'Sector', 'Percent Change', 'Current Price', 'Last Price']]
+    losers_display.columns = ['Company', 'Ticker', 'Change', 'Sector', 'Percent Loss', 'Current Price', 'Last Price']
+    st.write(losers_display)
 
-# Adding a Date column and resetting index
-data.insert(0, "Date", data.index, True)
-data.reset_index(drop=True, inplace=True)
-st.write(f'----------------------------------------------Data from {start_date} to {end_date}-----------------------------------------')
-st.write(data)
 
-# Plotting the data
-st.header('Visualizing the data')
-st.subheader('Plotting the data')
-st.write("**Note:** Select your specific date range on the sidebar, or zoom in on the plot and select your specific column")
-fig = px.line(data, x='Date', y=data.columns, title='Closing price of the stock', width=2500, height=500)
-st.plotly_chart(fig)
+    # Sidebar header
+    st.sidebar.header("Select Input Parameters Below")
 
-# Adding a dropdown menu for selecting columns from data
-column = st.selectbox('Select the column for forecasting', data.columns[1:])
-data = data[['Date', column]]
-st.write("Selected Data")
-st.write(data)
+    # Adding a button to refresh data
+    refresh_button = st.sidebar.button("Refresh Data")
 
-# ADF test for stationarity
-st.header('Is data stationary?')
-if not data[column].empty:
-    st.write(adfuller(data[column])[1] < 0.05)
-else:
-    st.write("Data is empty")
+    # Taking start date and end date as input from user
+    start_date = st.sidebar.date_input('Start Date', date.today() - timedelta(days=365))
+    end_date = st.sidebar.date_input('End Date', date.today())
 
-# Convert date column to datetime and set as index
-data['Date'] = pd.to_datetime(data['Date'])
-data.set_index('Date', inplace=True)
+    # Fetching S&P 500 company tickers
+    # Connect to MySQL database
+    db_connection = mysql.connector.connect(
+        host="localhost",      # Replace with your host
+        user="root",      # Replace with your username
+        password="12345",  # Replace with your password
+        database="stock_market"
+    )
 
-# SARIMAX Model
-model = sm.tsa.statespace.SARIMAX(data[column], order=(2, 1, 2))
-model = model.fit()
+    # Fetch tickers, sectors, and company names from sp500_companies table
+    query = "SELECT Symbol, Security, GICS_Sector FROM sp500_companies"
+    cursor = db_connection.cursor()
+    cursor.execute(query)
+    results = cursor.fetchall()
 
-# Forecasting
-st.write("<p style='color:green; font-size: 50px; font-weight:bold;'>Forecasting the data</p>", unsafe_allow_html=True)
-forecast_period = st.number_input("Select the number of days to forecast", 1, 365, 7)
-predictions = model.get_prediction(start=len(data), end=len(data)+forecast_period-1)
-predictions = predictions.predicted_mean
+    # Organize the results into lists/dictionaries
+    ticker_list = [row[0] for row in results]  # List of Symbols
+    company_names = {row[0]: row[1] for row in results}  # Symbol -> Company Name
+    sectors = {row[0]: row[2] for row in results}  # Symbol -> GICS Sector
 
-# Set index and format predictions
-predictions.index = pd.date_range(start=end_date, periods=len(predictions), freq='D')
-predictions = pd.DataFrame(predictions)
-predictions.insert(0, 'Date', predictions.index)
-predictions.reset_index(drop=True, inplace=True)
-st.write("## Predictions", predictions)
-st.write("## Actual Data", data)
+    ticker = st.sidebar.selectbox('Select the company', ticker_list)
+    cursor.close()
+    db_connection.close()
 
-# Plotting actual vs predicted data
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=data.index, y=data[column], mode='lines', name='Actual', line=dict(color='blue')))
-fig.add_trace(go.Scatter(x=predictions["Date"], y=predictions["predicted_mean"], mode='lines', name='Predicted', line=dict(color='red')))
-fig.update_layout(title='Actual vs Predicted', xaxis_title='Date', yaxis_title='Price', width=1000, height=400)
-st.plotly_chart(fig)
 
-# Calculate risk or profit
-actual_last_price = data[column].iloc[-1]
-predicted_last_price = predictions["predicted_mean"].iloc[-1]
+    # Add space or divider to visually separate the footer section
+    st.sidebar.markdown("---")  # A horizontal line (divider)
 
-if actual_last_price > predicted_last_price:
-    risk = ((actual_last_price - predicted_last_price) / actual_last_price) * 100
-    st.header("## Risky Stock. Don't Buy This One")
-    st.write(f"<p style='color:red; font-size: 20px; font-weight:bold;'>Percentage of Risk in buying that stock is : {risk:.2f}%</p>", unsafe_allow_html=True)
-elif actual_last_price < predicted_last_price:
-    profit = ((predicted_last_price - actual_last_price) / actual_last_price) * 100
-    st.header("## Profitable Stock. You Can Buy This One")
-    st.write(f"<p style='color:green; font-size: 20px; font-weight:bold;'>Percentage of Profit in buying that stock is : {profit:.2f}%</p>", unsafe_allow_html=True)
-else:
-    st.write("No change in price")
+    # Collapsible "About Us" Section
+    with st.sidebar.expander("About Us"):
+        st.write("""
+        Welcome to Stock Market Analytics, your one-stop platform for tracking and analyzing the stock market. 
+        Our mission is to provide users with a comprehensive and user-friendly interface to explore the world of finance.
+        Our team of experts is dedicated to delivering accurate and timely data, along with powerful analytics tools, to help you make informed investment decisions.
+        Whether you're a seasoned investor or just starting out, we're committed to helping you navigate the complex world of finance with ease.
+        """)
+
+    # Collapsible "Contact Us" Section
+    with st.sidebar.expander("Contact Us"):
+        st.write("""
+        Feel free to reach out to us for any inquiries or support:
+        - **Email**: support@stocktracker.com
+        - **Phone**: +1 234 567 890
+        """)
+
+    # Fetch sector and industry for the selected stock
+    try:
+        # Use the database connection to fetch sector and industry information
+        db_connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="12345",
+            database="stock_market"
+        )
+    
+        cursor = db_connection.cursor(dictionary=True)
+        query = "SELECT GICS_Sector, GICS_Sub_Industry FROM sp500_companies WHERE Symbol = %s"
+        cursor.execute(query, (ticker,))
+    
+        company_info = cursor.fetchone()
+    
+        if company_info:
+            sector = company_info['GICS_Sector']
+            industry = company_info['GICS_Sub_Industry']
+        
+            # Display sector and industry with styled Streamlit markdown
+            st.markdown(f"""
+            <div style='display: flex; flex-direction: column; gap: 10px;'>
+                <p style='color:red; font-size: 20px; font-weight:bold;'>
+                    Entered Stock Sector: 
+                    <span style='color:green'>{sector}</span>
+                </p>
+                <p style='color:red; font-size: 20px; font-weight:bold;'>
+                    Entered Stock Sub-Industry: 
+                    <span style='color:green'>{industry}</span>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning(f"No information found for ticker {ticker}")
+
+    except mysql.connector.Error as err:
+        st.error(f"Database connection error: {err}")
+
+    finally:
+        # Ensure the database connection is closed
+        if 'cursor' in locals():
+            cursor.close()
+        if 'db_connection' in locals():
+            db_connection.close()
+        
+    # Refresh data if refresh button is pressed
+    if refresh_button:
+        data = yf.download(ticker, start=start_date, end=end_date)
+    else:
+        data = yf.download(ticker, start=start_date, end=end_date)
+
+    # Adding a Date column and resetting index
+    data.insert(0, "Date", data.index, True)
+    data.reset_index(drop=True, inplace=True)
+    st.write(f'----------------------------------------------Data from {start_date} to {end_date}-----------------------------------------')
+    st.write(data)
+
+    # Flatten the multi-level columns if necessary
+    data.columns = ['_'.join(col) if isinstance(col, tuple) else col for col in data.columns]
+
+    # Plotting the data
+    st.header('Visualizing the data')
+    st.subheader('Plotting the data')
+    st.write("**Note:** Select your specific date range on the sidebar, or zoom in on the plot and select your specific column")
+
+    
+    # Make sure 'Date' is a column, not an index
+    if 'Date' not in data.columns:
+        data.reset_index(inplace=True)  # Reset index if 'Date' is currently the index
+    data.rename(columns={'index': 'Date'}, inplace=True)
+    column = st.selectbox('Select the column for forecasting', data.columns[1:])
+    data = data[['Date', column]]
+    st.write("Selected Data")
+    st.write(data)
+    
+    # Now use `column` in the plot function
+    fig = px.line(data, x='Date', y=column, width=2500, height=500)
+    st.plotly_chart(fig)
+
+    # ADF test for stationarity
+    st.header('Is data stationary?')
+    if not data[column].empty and data[column].isnull().sum() < len(data):
+        st.write(adfuller(data[column])[1] < 0.05)
+    else:
+        st.write("Data is empty or contains only null values.")
+
+    # Convert date column to datetime and set as index
+    data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
+    data.set_index('Date', inplace=True)
+
+    # SARIMAX Model
+    model = sm.tsa.statespace.SARIMAX(data[column], order=(1, 1, 1))    
+    model = model.fit()
+
+    # Forecasting
+    st.write("<p style='color:green; font-size: 50px; font-weight:bold;'>Forecasting the data</p>", unsafe_allow_html=True)
+    forecast_period = st.number_input("Select the number of days to forecast", 1, 365, 7)
+    predictions = model.get_prediction(start=len(data), end=len(data) + forecast_period - 1)
+    predictions = predictions.predicted_mean
+
+    # Set index and format predictions
+    predictions.index = pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=len(predictions), freq='D')
+
+    # Convert Series to DataFrame before using insert
+    predictions_df = predictions.to_frame(name='predicted_mean')
+    predictions_df.insert(0, 'Date', predictions_df.index)
+
+    # Reset the index (if needed) and display predictions
+    predictions_df.reset_index(drop=True, inplace=True)
+    st.write("## Predictions", predictions_df)
+    st.write("## Actual Data", data)
+
+    # Ensure the index is in datetime format
+    if not pd.api.types.is_datetime64_any_dtype(data.index):
+        data.index = pd.to_datetime(data.index)
+
+    # Drop missing values if any
+    if data[column].isnull().any():
+        data = data.dropna(subset=[column])
+
+    # Add artificial noise to actual data to create zig-zag effect
+    noise = np.random.normal(0, 0.02 * data[column].std(), len(data))
+    zigzag_actual = data[column] + noise
+
+    # Plotting actual vs predicted data with zig-zag effect for actual data
+    fig = go.Figure()
+
+    # Add zig-zag actual data trace
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=zigzag_actual,
+            mode='lines+markers',
+            name='Actual (Zig-Zag)',
+            line=dict(color='blue', dash='dot')
+        )
+    )
+
+    # Add predicted data trace
+    fig.add_trace(
+        go.Scatter(
+            x=predictions_df['Date'],
+            y=predictions_df['predicted_mean'],
+            mode='lines+markers',
+            name='Predicted',
+            line=dict(color='red')
+        )
+    )
+
+    # Adjust layout
+    fig.update_layout(
+        title='Actual (Zig-Zag) vs Predicted',
+     xaxis_title='Date',
+        yaxis_title='Price',
+        width=1000,
+        height=400
+    )
+
+    # Display the plot
+    st.plotly_chart(fig)
+
+    # Calculate risk or profit
+    actual_last_price = data[column].iloc[-1]
+   # Ensure predictions is converted to DataFrame
+    predictions_df = predictions.to_frame(name='predicted_mean')
+
+    # Access the 'predicted_mean' column from predictions_df
+    predicted_last_price = predictions_df["predicted_mean"].iloc[-1]
+
+
+    if pd.notna(actual_last_price) and pd.notna(predicted_last_price):
+        if actual_last_price > predicted_last_price:
+            risk = ((actual_last_price - predicted_last_price) / actual_last_price) * 100
+            st.header("## Risky Stock. Don't Buy This One")
+            st.write(f"<p style='color:red; font-size: 20px; font-weight:bold;'>Percentage of Risk in buying that stock is : {risk:.2f}%</p>", unsafe_allow_html=True)
+        elif actual_last_price < predicted_last_price:
+            profit = ((predicted_last_price - actual_last_price) / actual_last_price) * 100
+            st.header("## Profitable Stock. You Can Buy This One")
+            st.write(f"<p style='color:green; font-size: 20px; font-weight:bold;'>Percentage of Profit in buying that stock is : {profit:.2f}%</p>", unsafe_allow_html=True)
+        else:
+            st.write("No change in price")
+    else:
+        st.write("Unable to calculate risk or profit due to missing data.")
+
     
 
-# Nifty50 visualization
-#st.header('Nifty50 Index Trend')
+    # Suggest top 5 similar stocks
+    st.header('Top 5 Similar Stocks')
 
-# Fetch Nifty50 data from Yahoo Finance
-#nifty50_ticker = '^NSEI'
-#nifty50_data = yf.download(nifty50_ticker, start=start_date, end=end_date)
+    # Connect to database to fetch similar stocks
+    try:
+        db_connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="12345",
+            database="stock_market"
+        )
+    
+        # Prepare SQL query to find similar stocks
+        query = """
+        SELECT Symbol, Security, GICS_Sector, GICS_Sub_Industry 
+        FROM sp500_companies 
+        WHERE GICS_Sector = %s 
+        AND Symbol != %s 
+        LIMIT 5
+        """
+    
+        cursor = db_connection.cursor(dictionary=True)
+        cursor.execute(query, (sector, ticker))
+    
+        # Fetch similar stocks
+        similar_stocks = pd.DataFrame(cursor.fetchall())
+    
+        # Display similar stocks if found
+        if not similar_stocks.empty:
+            st.write(similar_stocks[['Symbol', 'Security', 'GICS_Sector', 'GICS_Sub_Industry']])
+        else:
+            st.write("No similar stocks found in the same sector.")
 
-# Adding a Date column and resetting index
-#nifty50_data.insert(0, "Date", nifty50_data.index, True)
-#nifty50_data.reset_index(drop=True, inplace=True)
+    
+    except mysql.connector.Error as err:
+        st.error(f"Database error: {err}")
+    finally:
+        # Ensure connection is closed
+        if 'cursor' in locals():
+            cursor.close()
+        if 'db_connection' in locals():
+            db_connection.close()
 
-# Display Nifty50 data
-#st.write(f"--- Nifty50 Data from {start_date} to {end_date} ---")
-#st.write(nifty50_data)
+    # News Section - Latest Stock Market News
+    st.header('Latest Stock Market News')
 
-# Plot Nifty50 Opening and Closing Price trend
-#st.subheader('Nifty50 Opening and Closing Price Trend')
-#fig_nifty50 = go.Figure()
+    api_key = 'e13f2a22dd724be6b5d4f5d782b0cd40'  # Your News API key
+    news_url = f'https://newsapi.org/v2/everything?q=stock%20market&sortBy=publishedAt&apiKey={api_key}'
 
-# Add Opening price to the plot
-#fig_nifty50.add_trace(go.Scatter(
-#    x=nifty50_data['Date'], y=nifty50_data['Open'], mode='lines', name='Opening Price', line=dict(color='blue')
-#))
+    try:
+        response = requests.get(news_url)
+        response.raise_for_status()  # Raise an error for bad responses
+        news_data = response.json()
 
-# Add Closing price to the plot
-#fig_nifty50.add_trace(go.Scatter(
-#    x=nifty50_data['Date'], y=nifty50_data['Close'], mode='lines', name='Closing Price', line=dict(color='red')
-#))
+        if news_data['status'] == 'ok':
+            articles = news_data['articles'][:5]  # Get the top 5 latest news articles
+            for article in articles:
+                st.subheader(article['title'])
+                st.write(f"Source: {article['source']['name']}")
+                st.write(article['description'])
+                st.write(f"[Read more]({article['url']})")
+                st.write("---")
+        else:
+            st.write("Failed to fetch news.")
+    except requests.exceptions.RequestException as e:
+        st.write(f"An error occurred: {e}")
 
-#fig_nifty50.update_layout(
-#    title='Nifty50 Opening and Closing Price Trend',
-#    xaxis_title='Date',
-#    yaxis_title='Price',
-#    width=1000,
-#    height=400
-#)
-#st.plotly_chart(fig_nifty50)
+def main():
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
 
-# Show percentage change over the period for both Open and Close
-#nifty50_data['Open Change (%)'] = nifty50_data['Open'].pct_change() * 100
-#nifty50_data['Close Change (%)'] = nifty50_data['Close'].pct_change() * 100
-#st.write('--- Nifty50 Opening and Closing Percentage Change Over Time ---')
-#st.write(nifty50_data[['Date', 'Open', 'Close', 'Open Change (%)', 'Close Change (%)']])
+    if st.session_state.logged_in:
+        # If logged in, show the dashboard page only
+         dasboard()
+    else:
+        st.sidebar.title("Navigation")
+        choice = st.sidebar.radio("Choose Action", ["Login", "Register"])
 
-# Plot Nifty50 Percentage Change for both Open and Close prices
-#st.subheader('Nifty50 Opening and Closing Price Percentage Change')
-#fig_nifty50_change = go.Figure()
-
-# Add Open Change to the plot
-#fig_nifty50_change.add_trace(go.Scatter(
-#    x=nifty50_data['Date'], y=nifty50_data['Open Change (%)'], mode='lines', name='Open Change (%)', line=dict(color='green')
-#))
-
-# Add Close Change to the plot
-#fig_nifty50_change.add_trace(go.Scatter(
-#    x=nifty50_data['Date'], y=nifty50_data['Close Change (%)'], mode='lines', name='Close Change (%)', line=dict(color='orange')
-#))
-
-#fig_nifty50_change.update_layout(
-#    title='Nifty50 Opening and Closing Price Percentage Change',
-#    xaxis_title='Date',
-#    yaxis_title='Percentage Change (%)',
-#    width=1000,
-#    height=400
-#)
-#st.plotly_chart(fig_nifty50_change)
-
-
-# Suggest top 5 similar stocks
-#st.header('Top 5 Similar Stocks')
-
-# Filter stocks with the same sector and industry
-#similar_stocks = sp500_table[(sp500_table['GICS Sector'] == sector) & (sp500_table['Symbol'] != ticker)].head(5)
-#similar_stocks = similar_stocks[['Symbol', 'Security', 'GICS Sector', 'GICS Sub-Industry']]
-
-# Display similar stocks
-#st.write(similar_stocks)
-
-# News Section - Latest Stock Market News
-#st.header('Latest Stock Market News')
-
-#api_key = 'e13f2a22dd724be6b5d4f5d782b0cd40'  # Your News API key
-#news_url = f'https://newsapi.org/v2/everything?q=stock%20market&sortBy=publishedAt&apiKey={api_key}'
-
-#try:
-#    response = requests.get(news_url)
-#    response.raise_for_status()  # Raise an error for bad responses
-#    news_data = response.json()
-
-#    if news_data['status'] == 'ok':
-#        articles = news_data['articles'][:5]  # Get the top 5 latest news articles
-#        for article in articles:
-#            st.subheader(article['title'])
-#            st.write(f"Source: {article['source']['name']}")
-#            st.write(article['description'])
-#            st.write(f"[Read more]({article['url']})")
-#           st.write("---")
-#    else:
-#        st.write("Failed to fetch news.")
-#except requests.exceptions.RequestException as e:
-#    st.write(f"An error occurred: {e}")
+        if choice == "Login":
+            login_user()
+        elif choice == "Register":
+            register_user()
+ 
+if __name__ == "__main__":
+    main()
