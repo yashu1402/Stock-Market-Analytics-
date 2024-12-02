@@ -1,3 +1,4 @@
+from decimal import Decimal
 import streamlit as st
 import mysql.connector
 import random
@@ -27,7 +28,7 @@ db_config = {
     "host": "localhost",
     "user": "root",
     "password": "12345",
-    "database": "stock_app"  # Use the same database in both login and registration
+    "database": "stock_market"  # Use the same database in both login and registration
 }
 
 # Email Configuration
@@ -80,6 +81,7 @@ def verify_otp(username, input_otp):
                 conn.close()
                 if user:
                     st.session_state["user_logged_in"] = True
+                    st.session_state["username"] = username
                     st.success("OTP verified successfully! Redirecting to the dashboard...")
 
                     # Set logged_in session state
@@ -177,12 +179,86 @@ def register_user():
                                    (email, username, encrypted_password.decode()))
                     conn.commit()
                     st.success("User registered successfully!")
-                    login_user()
+                    st.rerun()
                 except mysql.connector.IntegrityError:
                     st.error("Username or email already registered.")
                 conn.close()
         else:
             st.error("Please fill all fields.")
+
+def fetch_current_price(ticker):
+    """Fetch the current price of the stock using yfinance."""
+    data = yf.download(ticker, period='1d', group_by='ticker', auto_adjust=True)
+    return data[ticker]['Close'][-1] if not data.empty else None
+
+def buy_stock(ticker, current_price):
+    username = st.session_state["username"]  # Get the logged-in username
+    conn = connect_to_db()
+    if conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT INTO user_stocks (username, ticker, purchase_price) VALUES (%s, %s, %s)",
+                           (username, ticker, Decimal(current_price)))
+            conn.commit()
+            st.success(f"Stock {ticker} bought at price {current_price}.")
+        except mysql.connector.Error as err:
+            st.error(f"Error buying stock: {err}")
+        finally:
+            cursor.close()
+            conn.close()
+        show_user_stocks()
+
+def sell_stock(ticker):
+    username = st.session_state["username"]  # Get the logged-in username
+    conn = connect_to_db()
+    if conn:
+        cursor = conn.cursor()
+        try:
+            # Fetch the purchase price
+            cursor.execute("SELECT purchase_price FROM user_stocks WHERE username = %s AND ticker = %s", (username, ticker))
+            purchase_record = cursor.fetchone()
+            if purchase_record:
+                purchase_price = purchase_record[0]
+                current_price = fetch_current_price(ticker)
+                
+                if current_price is not None:  # Check if current_price is valid
+                    current_price = Decimal(current_price)  # Convert to Decimal
+                    profit_or_loss = (current_price - Decimal(purchase_price)) / Decimal(purchase_price) * 100
+                    
+                    # Delete the stock from user's stocks
+                    cursor.execute("DELETE FROM user_stocks WHERE username = %s AND ticker = %s", (username, ticker))
+                    conn.commit()
+                    
+                    if profit_or_loss > 0:
+                        st.success(f"Sold stock {ticker} at profit of {profit_or_loss:.2f}%.")
+                    else:
+                        st.success(f"Sold stock {ticker} at loss of {abs(profit_or_loss):.2f}%.")
+                else:
+                    st.error("Current price could not be fetched. Please try again later.")
+            else:
+                st.error("Stock not found in your portfolio.")
+        except mysql.connector.Error as err:
+            st.error(f"Error selling stock: {err}")
+        finally:
+            cursor.close()
+            conn.close()
+        show_user_stocks()
+        
+def show_user_stocks():
+    username = st.session_state["username"]  # Get the logged-in username
+    conn = connect_to_db()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ticker, purchase_price, purchase_date FROM user_stocks WHERE username = %s", (username,))
+        stocks = cursor.fetchall()
+        conn.close()
+        
+        if stocks:
+            st.subheader("Your Stocks")
+            for stock in stocks:
+                st.write(f"Ticker: {stock[0]}, Purchase Price: {stock[1]}, Purchase Date: {stock[2]}")
+        else:
+            st.write("You have no stocks bought yet.")
 
 def dasboard():
     # App name
@@ -300,6 +376,7 @@ def dasboard():
         password="12345",  # Replace with your password
         database="stock_market"
     )
+    
 
     # Fetch tickers, sectors, and company names from sp500_companies table
     query = "SELECT Symbol, Security, GICS_Sector FROM sp500_companies"
@@ -395,7 +472,7 @@ def dasboard():
     st.write(f'----------------------------------------------Data from {start_date} to {end_date}-----------------------------------------')
     st.write(data)
 
-    # Flatten the multi-level columns if necessary
+    #Flatten the multi-level columns if necessary
     data.columns = ['_'.join(col) if isinstance(col, tuple) else col for col in data.columns]
 
     # Plotting the data
@@ -403,16 +480,20 @@ def dasboard():
     st.subheader('Plotting the data')
     st.write("**Note:** Select your specific date range on the sidebar, or zoom in on the plot and select your specific column")
 
-    
-    # Make sure 'Date' is a column, not an index
+    # Ensure 'Date' is a column, not an index
     if 'Date' not in data.columns:
         data.reset_index(inplace=True)  # Reset index if 'Date' is currently the index
-    data.rename(columns={'index': 'Date'}, inplace=True)
-    column = st.selectbox('Select the column for forecasting', data.columns[1:])
-    data = data[['Date', column]]
+        data = data.rename(columns={'index': 'Date'})
+        
+
+    # Select the column for forecasting, excluding 'Date' and any column starting with 'Date_'
+    column_options = [col for col in data.columns if col != 'Date' and not col.startswith('Date_')]
+    column = st.selectbox('Select the column for forecasting', column_options)
+    plot_data = data[[ column]]  # Now we have the 'Date' column and the selected column
+
     st.write("Selected Data")
-    st.write(data)
-    
+    st.write(plot_data)
+
     # Now use `column` in the plot function
     fig = px.line(data, x='Date', y=column, width=2500, height=500)
     st.plotly_chart(fig)
@@ -522,8 +603,17 @@ def dasboard():
     else:
         st.write("Unable to calculate risk or profit due to missing data.")
 
-    
+    if st.session_state.get("user_logged_in", False):
+        current_price = data[column].iloc[-1]  # Get the current price of the selected stock
+        if st.button("Buy Stock"):
+            buy_stock(ticker, current_price)
+        
+        if st.button("Sell Stock"):
+            sell_stock(ticker)
 
+    # Call to show stocks after actions
+    show_user_stocks()
+    
     # Suggest top 5 similar stocks
     st.header('Top 5 Similar Stocks')
 
