@@ -357,7 +357,6 @@ def dasboard():
     losers_display.columns = ['Company', 'Ticker', 'Change', 'Sector', 'Percent Loss', 'Current Price', 'Last Price']
     st.write(losers_display)
 
-
     # Sidebar header
     st.sidebar.header("Select Input Parameters Below")
 
@@ -516,12 +515,16 @@ def dasboard():
     # Forecasting
     st.write("<p style='color:green; font-size: 50px; font-weight:bold;'>Forecasting the data</p>", unsafe_allow_html=True)
     forecast_period = st.number_input("Select the number of days to forecast", 1, 365, 7)
-    predictions = model.get_prediction(start=len(data), end=len(data) + forecast_period - 1)
+    end_date_selected = pd.to_datetime(end_date)
+    start_forecast_date = end_date_selected + pd.Timedelta(days=1)
+    
+    predictions = model.get_forecast(steps=forecast_period)
     predictions = predictions.predicted_mean
 
     # Set index and format predictions
-    predictions.index = pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=len(predictions), freq='D')
-
+    forecast_dates = pd.date_range(start=start_forecast_date, periods=forecast_period, freq='D')
+    predictions.index = forecast_dates
+    
     # Convert Series to DataFrame before using insert
     predictions_df = predictions.to_frame(name='predicted_mean')
     predictions_df.insert(0, 'Date', predictions_df.index)
@@ -529,33 +532,9 @@ def dasboard():
     # Reset the index (if needed) and display predictions
     predictions_df.reset_index(drop=True, inplace=True)
     st.write("## Predictions", predictions_df)
-    st.write("## Actual Data", data)
-
-    # Ensure the index is in datetime format
-    if not pd.api.types.is_datetime64_any_dtype(data.index):
-        data.index = pd.to_datetime(data.index)
-
-    # Drop missing values if any
-    if data[column].isnull().any():
-        data = data.dropna(subset=[column])
-
-    # Add artificial noise to actual data to create zig-zag effect
-    noise = np.random.normal(0, 0.02 * data[column].std(), len(data))
-    zigzag_actual = data[column] + noise
 
     # Plotting actual vs predicted data with zig-zag effect for actual data
     fig = go.Figure()
-
-    # Add zig-zag actual data trace
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=zigzag_actual,
-            mode='lines+markers',
-            name='Actual (Zig-Zag)',
-            line=dict(color='blue', dash='dot')
-        )
-    )
 
     # Add predicted data trace
     fig.add_trace(
@@ -570,7 +549,7 @@ def dasboard():
 
     # Adjust layout
     fig.update_layout(
-        title='Actual (Zig-Zag) vs Predicted',
+        title='Predicted',
      xaxis_title='Date',
         yaxis_title='Price',
         width=1000,
